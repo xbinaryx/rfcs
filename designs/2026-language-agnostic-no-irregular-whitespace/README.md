@@ -26,6 +26,8 @@ Specifically:
 
 1. **Add `comments` property to `SourceCode` and `TextSourceCodeBase`:** A `comments` property will be added to the JavaScript `SourceCode` class. Simultaneously, `TextSourceCodeBase` from `@eslint/plugin-kit` will define an optional `comments` property, typed as `Array<Options['SyntaxElementWithLoc']>|undefined`. `CSSSourceCode` and `JSONSourceCode` will populate this inherited property, while `MarkdownSourceCode` will leave it undefined.
 
+Because `comments` supersedes it, the JavaScript-only `SourceCode#getAllComments()` method will be deprecated as part of this change. It will be annotated with a JSDoc `@deprecated` tag pointing at `sourceCode.comments`, marked `@deprecated` in the type declarations, and noted as deprecated in the documentation. The method itself keeps working unchanged; no removal is proposed here.
+
 2. **Calculate irregular-character locations from source indices:** The rule will replace `checkForIrregularWhitespace` and `checkForIrregularLineTerminators` with a single scan of `sourceCode.text`. Each match's start and end indices will be converted with `sourceCode.getLocFromIndex()`. This is necessary because JavaScript treats `\u2028` and `\u2029` as line separators, while CSS, JSON, and Markdown do not. `getLocFromIndex()` already applies the active language's line-ending rules, so the rule does not need the JavaScript-specific `LINE_BREAK` or `IRREGULAR_LINE_TERMINATORS` regular expressions.
 
 ```js
@@ -47,6 +49,24 @@ function checkForIrregularCharacters(node) {
 			},
 		});
 	}
+}
+```
+
+The same reasoning applies to `removeWhitespaceError()`, which currently reads `node.loc` directly to decide which errors fall inside a skipped node. `loc` is a property of the JavaScript AST and is not guaranteed to exist on nodes produced by other languages, so the function will use `sourceCode.getLoc(nodeOrToken)` instead.
+
+```js
+function removeWhitespaceError(nodeOrToken) {
+	const { start: locStart, end: locEnd } = sourceCode.getLoc(nodeOrToken);
+
+	errors = errors.filter(
+		({ loc: { start: errorLocStart } }) =>
+			errorLocStart.line < locStart.line ||
+			(errorLocStart.line === locStart.line &&
+				errorLocStart.column < locStart.column) ||
+			(errorLocStart.line === locEnd.line &&
+				errorLocStart.column >= locEnd.column) ||
+			errorLocStart.line > locEnd.line,
+	);
 }
 ```
 
@@ -86,7 +106,14 @@ skipNodes.forEach(selector => {
 });
 ```
 
-The existing JavaScript-specific options (`skipStrings`, `skipRegExps`, `skipTemplates`, and `skipJSXText`) will be retained for backwards compatibility, but their documentation and type declarations will be marked deprecated. `skipNodes` is the preferred way to exclude syntax going forward.
+The existing JavaScript-specific options (`skipStrings`, `skipRegExps`, `skipTemplates`, and `skipJSXText`) will be retained for backwards compatibility, but their documentation and type declarations will be marked deprecated. Each has an exact `skipNodes` equivalent, so `skipNodes` is the preferred way to exclude syntax going forward:
+
+| Deprecated option | `skipNodes` equivalent        |
+| ----------------- | ----------------------------- |
+| `skipStrings`     | `Literal[value=type(string)]` |
+| `skipRegExps`     | `Literal[regex]`              |
+| `skipTemplates`   | `TemplateElement`             |
+| `skipJSXText`     | `JSXText`                     |
 
 5. **Root node listener:** The rule will attach the main traversal to the root node type of the current AST, rather than the hardcoded `Program` node. This will accommodate different language plugins that use different root nodes (e.g., `StyleSheet` for CSS, `Document` for JSON, and `root` for Markdown).
 
@@ -104,8 +131,8 @@ nodes[`${rootNodeType}:exit`] = function () {
 
 ## Documentation
 
-- [Custom Rules documentation](https://eslint.org/docs/latest/extend/custom-rules) should be updated to document the new `comments` property on the `SourceCode` object.
-- [`no-irregular-whitespace` rule documentation](https://eslint.org/docs/latest/rules/no-irregular-whitespace) should be updated to document the new `skipNodes` option, explaining how to use it with ESQuery selectors, and to note that the rule can now safely be used on non-JavaScript files.
+- [Custom Rules documentation](https://eslint.org/docs/latest/extend/custom-rules) should be updated to document the new `comments` property on the `SourceCode` object and to mark `getAllComments()` as deprecated in favor of it.
+- [`no-irregular-whitespace` rule documentation](https://eslint.org/docs/latest/rules/no-irregular-whitespace) should be updated to document the new `skipNodes` option, explaining how to use it with ESQuery selectors, to mark `skipStrings`, `skipRegExps`, `skipTemplates`, and `skipJSXText` as deprecated with their selector equivalents, and to note that the rule can now safely be used on non-JavaScript files.
 
 ## Drawbacks
 
@@ -113,7 +140,7 @@ The existing JS-specific options (`skipStrings`, `skipTemplates`, `skipRegExps`,
 
 ## Backwards Compatibility Analysis
 
-This change is fully backwards compatible. The JS `SourceCode` object will continue to expose the existing `getAllComments()` method alongside the new `comments` property, ensuring no disruption to ecosystem plugins that rely on the older API. The existing boolean options for skipping specific JS nodes (`skipStrings`, `skipTemplates`, etc.) will also continue to behave exactly as they do today.
+This change is fully backwards compatible. The JS `SourceCode` object will continue to expose the existing `getAllComments()` method alongside the new `comments` property, ensuring no disruption to ecosystem plugins that rely on the older API. Deprecating `getAllComments()` affects only its JSDoc, type declarations, and documentation; the method will keep working, and this RFC does not propose removing it. The existing boolean options for skipping specific JS nodes (`skipStrings`, `skipTemplates`, etc.) will also continue to behave exactly as they do today.
 
 ## Alternatives
 
@@ -121,7 +148,7 @@ Separate rules, such as `css/no-irregular-whitespace` and `json/no-irregular-whi
 
 ## Open Questions
 
-With the addition of the `comments` property to the JavaScript `SourceCode` class, its existing `getAllComments()` method becomes redundant. Should a formal deprecation (via JSDoc `@deprecated` tag and documentation updates) be included in the scope of this RFC, or should it be deferred to avoid immediate ecosystem churn?
+None.
 
 ## Help Needed
 
